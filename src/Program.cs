@@ -1,5 +1,6 @@
 ﻿using System.Data;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using Npgsql;
 
@@ -10,20 +11,35 @@ public class Program
     private static readonly Dictionary<string, (string ConnectionString, string ProviderName)> _connectionConfigs =
         new();
 
+    private static string _commentExtractPattern = null;
+
     public static async Task Main(string[] args)
     {
         if (args.Length == 0)
         {
-            Console.WriteLine("使用方法: serupd.exe <目錄路徑> [appsettings.json路徑]");
+            Console.WriteLine("使用方法: serupd.exe <目錄路徑> [appsettings.json路徑] [--comment-regex <正規表達式>]");
             Console.WriteLine("範例: serupd.exe C:\\MyProject\\Modules");
             Console.WriteLine("範例: serupd.exe C:\\MyProject\\Modules C:\\MyProject\\appsettings.json");
+            Console.WriteLine("範例: serupd.exe C:\\MyProject\\Modules --comment-regex \"^([^\\n]+)\"");
+            Console.WriteLine("       (使用正規表達式提取註解的第一行)");
             return;
         }
 
         var targetDirectory = args[0];
-        var appSettingsPath = args.Length > 1
+        var appSettingsPath = args.Length > 1 && !args[1].StartsWith("--")
             ? args[1]
             : Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
+
+        // 解析命令列參數
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--comment-regex" && i + 1 < args.Length)
+            {
+                _commentExtractPattern = args[i + 1];
+                Console.WriteLine($"使用註解擷取模式: {_commentExtractPattern}");
+                break;
+            }
+        }
 
         if (!Directory.Exists(targetDirectory))
         {
@@ -218,7 +234,6 @@ public class Program
         // 移除引號
         var cleanName = tableName.Replace("\"", "").Replace("'", "").Replace("`", "").Replace("[", "")
             .Replace("]", "");
-        ;
 
         // 檢查是否包含 schema
         if (cleanName.Contains('.'))
@@ -230,8 +245,8 @@ public class Program
             }
         }
 
-        // 如果沒有指定 schema，預設使用 public
-        return ("public", cleanName);
+        // 如果沒有指定 schema，預設使用 dbo
+        return ("dbo", cleanName);
     }
 
     private static (string Schema, string Table) ParsePostgreSqlTableName(string tableName)
@@ -260,7 +275,7 @@ public class Program
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync();
 
-        var (schema, table) = ParsePostgreSqlTableName(tableName);
+        var (schema, table) = ParseSqlserverTableName(tableName);
 
         const string sql = """
                                SELECT 
@@ -286,7 +301,8 @@ public class Program
             var comment = reader.GetString("COLUMN_COMMENT");
             if (!string.IsNullOrWhiteSpace(comment))
             {
-                comments[columnName] = comment.Trim();
+                var extractedComment = ExtractCommentText(comment);
+                comments[columnName] = extractedComment;
             }
         }
     }
@@ -321,8 +337,44 @@ public class Program
             var comment = reader.GetString("column_comment");
             if (!string.IsNullOrWhiteSpace(comment))
             {
-                comments[columnName] = comment.Trim();
+                var extractedComment = ExtractCommentText(comment);
+                comments[columnName] = extractedComment;
             }
+        }
+    }
+
+    private static string ExtractCommentText(string comment)
+    {
+        if (string.IsNullOrWhiteSpace(_commentExtractPattern))
+        {
+            // 如果沒有指定正規表達式，返回第一行
+            var firstLine = comment.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries)[0];
+            return firstLine.Trim();
+        }
+
+        try
+        {
+            var regex = new Regex(_commentExtractPattern);
+            var match = regex.Match(comment);
+
+            if (match.Success)
+            {
+                // 如果有群組，取第一個群組；否則取整個匹配
+                var result = match.Groups.Count > 1 ? match.Groups[1].Value : match.Value;
+                return result.Trim();
+            }
+
+            // 如果正規表達式沒有匹配，返回原始註解的第一行
+            Console.WriteLine(
+                $"  警告: 正規表達式未匹配註解 '{comment.Replace('\n', ' ').Substring(0, Math.Min(50, comment.Length))}...'，使用第一行");
+            var firstLine = comment.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries)[0];
+            return firstLine.Trim();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  警告: 正規表達式處理失敗 ({ex.Message})，使用第一行");
+            var firstLine = comment.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries)[0];
+            return firstLine.Trim();
         }
     }
 }
