@@ -23,19 +23,19 @@ public class CSharpCodeAnalyzer
         bool IsRowFieldsBase(BaseListSyntax baseList)
             => baseList?.Types.Any(t => t.Type.ToString().EndsWith("RowFieldsBase", StringComparison.Ordinal)) == true;
 
-        ClassDeclarationSyntax targetClass = allClasses
-                                                 .FirstOrDefault(c =>
-                                                     c.Identifier.Text.EndsWith("Row", StringComparison.Ordinal) &&
-                                                     !IsRowFieldsBase(c.BaseList))
-                                             ?? allClasses.FirstOrDefault(c =>
-                                                 !c.Identifier.Text.Contains("RowFields", StringComparison.Ordinal) &&
-                                                 !IsRowFieldsBase(c.BaseList));
+        var targetClass = allClasses
+                              .FirstOrDefault(c =>
+                                  c.Identifier.Text.EndsWith("Row", StringComparison.Ordinal) &&
+                                  !IsRowFieldsBase(c.BaseList))
+                          ?? allClasses.FirstOrDefault(c =>
+                              !c.Identifier.Text.Contains("RowFields", StringComparison.Ordinal) &&
+                              !IsRowFieldsBase(c.BaseList));
 
         if (targetClass == null) return null;
 
         // 抓取 class 上的 ConnectionKey / TableName
-        string connectionKey = GetAttributeFirstStringArg(targetClass.AttributeLists, "ConnectionKey");
-        string tableName = GetAttributeFirstStringArg(targetClass.AttributeLists, "TableName");
+        var connectionKey = GetAttributeFirstStringArg(targetClass.AttributeLists, "ConnectionKey");
+        var tableName = GetAttributeFirstStringArg(targetClass.AttributeLists, "TableName");
 
         // 抓取屬性與 Column 對應
         var properties = new List<RowPropertyInfo>();
@@ -133,8 +133,8 @@ public class CSharpCodeAnalyzer
             ["DataAuditLog"] = "" // 無參數
         };
 
-        var updatedClass = UpsertAttributes(targetClass, classAttrMap, preferredOrder: new[]
-        {
+        var updatedClass = UpsertAttributes(targetClass, classAttrMap, preferredOrder:
+        [
             "DisplayName",
             "InstanceName",
             "ReadPermission",
@@ -142,7 +142,7 @@ public class CSharpCodeAnalyzer
             "ServiceLookupPermission",
             "LookupScript",
             "DataAuditLog"
-        });
+        ]);
 
         // 若有審計屬性，加入 IAuditableRow
         if (updatedClass.Identifier.Text.EndsWith("Row", StringComparison.Ordinal) &&
@@ -223,8 +223,7 @@ public class CSharpCodeAnalyzer
             foreach (var attr in list.Attributes)
             {
                 var key = NormalizeAttrKey(attr.Name.ToString());
-                if (!allAttrs.ContainsKey(key))
-                    allAttrs[key] = attr;
+                allAttrs.TryAdd(key, attr);
             }
         }
 
@@ -246,7 +245,7 @@ public class CSharpCodeAnalyzer
                 var newAttr = BuildAttribute(kv.Key, args);
                 if (lists.Count == 0)
                 {
-                    lists.Add(SyntaxFactory.AttributeList(SyntaxFactory.SeparatedList(new[] { newAttr })));
+                    lists.Add(SyntaxFactory.AttributeList(SyntaxFactory.SeparatedList([newAttr])));
                 }
                 else
                 {
@@ -261,7 +260,7 @@ public class CSharpCodeAnalyzer
         }
 
         // 依 preferredOrder 排序（其餘按名稱排序）
-        var pref = preferredOrder?.ToArray() ?? Array.Empty<string>();
+        var pref = preferredOrder?.ToArray() ?? [];
         var known = allAttrs.Values.ToList();
         var ordered = known
             .OrderBy(a =>
@@ -277,7 +276,7 @@ public class CSharpCodeAnalyzer
         var newAttrList = SyntaxFactory.AttributeList(SyntaxFactory.SeparatedList(ordered))
             .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
 
-        return cls.WithAttributeLists(SyntaxFactory.List(new[] { newAttrList }));
+        return cls.WithAttributeLists(SyntaxFactory.List([newAttrList]));
     }
 
     private static string NormalizeAttrKey(string name)
@@ -299,7 +298,7 @@ public class CSharpCodeAnalyzer
 
         var expr = SyntaxFactory.ParseExpression(args);
         var arg = SyntaxFactory.AttributeArgument(expr);
-        var argList = SyntaxFactory.AttributeArgumentList(SyntaxFactory.SeparatedList(new[] { arg }));
+        var argList = SyntaxFactory.AttributeArgumentList(SyntaxFactory.SeparatedList([arg]));
         return SyntaxFactory.Attribute(name, argList);
     }
 
@@ -308,7 +307,7 @@ public class CSharpCodeAnalyzer
         AttributeSyntax oldAttr,
         AttributeSyntax newAttr)
     {
-        for (int i = 0; i < lists.Count; i++)
+        for (var i = 0; i < lists.Count; i++)
         {
             var list = lists[i];
             var idx = list.Attributes.IndexOf(oldAttr);
@@ -344,10 +343,15 @@ public class CSharpCodeAnalyzer
             // 支援 DateTime? 或 Nullable<DateTime>
             var text = t.ToString();
             if (text == "DateTime?") return true;
-            if (t is NullableTypeSyntax nts && nts.ElementType.ToString() == "DateTime") return true;
-            if (t is GenericNameSyntax g && g.Identifier.Text == "Nullable" &&
-                g.TypeArgumentList.Arguments.FirstOrDefault()?.ToString() == "DateTime") return true;
-            return false;
+            switch (t)
+            {
+                case NullableTypeSyntax nts when nts.ElementType.ToString() == "DateTime":
+                case GenericNameSyntax { Identifier.Text: "Nullable" } g when
+                    g.TypeArgumentList.Arguments.FirstOrDefault()?.ToString() == "DateTime":
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         return Has("CreatedAt", IsNullableDateTime)
@@ -368,7 +372,7 @@ public class CSharpCodeAnalyzer
         var newType = SyntaxFactory.SimpleBaseType(SyntaxFactory.ParseTypeName("IAuditableRow"));
         if (cls.BaseList == null)
         {
-            var baseList = SyntaxFactory.BaseList(SyntaxFactory.SeparatedList<BaseTypeSyntax>(new[] { newType }));
+            var baseList = SyntaxFactory.BaseList(SyntaxFactory.SeparatedList<BaseTypeSyntax>([newType]));
             return cls.WithBaseList(baseList);
         }
         else
@@ -379,19 +383,12 @@ public class CSharpCodeAnalyzer
     }
 
     // 以 Roslyn 修改屬性 DisplayName
-    private sealed class PropertyDisplayNameRewriter : CSharpSyntaxRewriter
+    private sealed class PropertyDisplayNameRewriter(Dictionary<string, string> propDisplay) : CSharpSyntaxRewriter
     {
-        private readonly Dictionary<string, string> _propDisplay;
-
-        public PropertyDisplayNameRewriter(Dictionary<string, string> propDisplay)
-        {
-            _propDisplay = propDisplay;
-        }
-
         public override SyntaxNode VisitPropertyDeclaration(PropertyDeclarationSyntax node)
         {
             var name = node.Identifier.Text;
-            if (!_propDisplay.TryGetValue(name, out var display))
+            if (!propDisplay.TryGetValue(name, out var display))
                 return base.VisitPropertyDeclaration(node);
 
             if (!HasGetSetAccessors(node))
@@ -420,7 +417,7 @@ public class CSharpCodeAnalyzer
             if (existing != null)
             {
                 // 以新 attr 取代舊的
-                for (int i = 0; i < lists.Count; i++)
+                for (var i = 0; i < lists.Count; i++)
                 {
                     var list = lists[i];
                     var idx = list.Attributes.IndexOf(existing);
@@ -441,7 +438,7 @@ public class CSharpCodeAnalyzer
                 }
                 else
                 {
-                    lists = lists.Add(SyntaxFactory.AttributeList(SyntaxFactory.SeparatedList(new[] { newAttr })));
+                    lists = lists.Add(SyntaxFactory.AttributeList(SyntaxFactory.SeparatedList([newAttr])));
                 }
             }
 
@@ -452,13 +449,13 @@ public class CSharpCodeAnalyzer
 
 public class RowClassInfo
 {
-    public string ConnectionKey { get; set; }
-    public string TableName { get; set; }
-    public List<RowPropertyInfo> Properties { get; set; } = new();
+    public string ConnectionKey { get; init; }
+    public string TableName { get; init; }
+    public List<RowPropertyInfo> Properties { get; init; } = [];
 }
 
 public class RowPropertyInfo
 {
-    public string PropertyName { get; set; }
-    public string ColumnName { get; set; }
+    public string PropertyName { get; init; }
+    public string ColumnName { get; init; }
 }

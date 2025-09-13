@@ -31,14 +31,12 @@ public class Program
             : Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
 
         // 解析命令列參數
-        for (int i = 0; i < args.Length; i++)
+        for (var i = 0; i < args.Length; i++)
         {
-            if (args[i] == "--comment-regex" && i + 1 < args.Length)
-            {
-                _commentExtractPattern = args[i + 1];
-                Console.WriteLine($"使用註解擷取模式: {_commentExtractPattern}");
-                break;
-            }
+            if (args[i] != "--comment-regex" || i + 1 >= args.Length) continue;
+            _commentExtractPattern = args[i + 1];
+            Console.WriteLine($"使用註解擷取模式: {_commentExtractPattern}");
+            break;
         }
 
         if (!Directory.Exists(targetDirectory))
