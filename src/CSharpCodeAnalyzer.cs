@@ -1,12 +1,9 @@
-﻿// CSharpCodeAnalyzer.cs
+﻿namespace SerenityRowDisplayNameUpdater;
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-// Roslyn
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+// Roslyn
 
 public class CSharpCodeAnalyzer
 {
@@ -97,14 +94,6 @@ public class CSharpCodeAnalyzer
         var tree = CSharpSyntaxTree.ParseText(content);
         var root = tree.GetCompilationUnitRoot();
 
-        // 確保 using EnterpriseOne.Behaviors;
-        if (!root.Usings.Any(u => u.Name.ToString() == "EnterpriseOne.Behaviors"))
-        {
-            var usingDirective = SyntaxFactory.UsingDirective(SyntaxFactory.ParseName("EnterpriseOne.Behaviors"))
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
-            root = root.AddUsings(usingDirective);
-        }
-
         // 找主要 Row 類別
         var allClasses = root.DescendantNodes().OfType<ClassDeclarationSyntax>().ToList();
 
@@ -143,13 +132,6 @@ public class CSharpCodeAnalyzer
             "LookupScript",
             "DataAuditLog"
         ]);
-
-        // 若有審計屬性，加入 IAuditableRow
-        if (updatedClass.Identifier.Text.EndsWith("Row", StringComparison.Ordinal) &&
-            HasAuditProperties(updatedClass))
-        {
-            updatedClass = EnsureImplementsIAuditableRow(updatedClass);
-        }
 
         var newRoot = root.ReplaceNode(targetClass, updatedClass);
         return newRoot.NormalizeWhitespace().ToFullString();
@@ -319,67 +301,6 @@ public class CSharpCodeAnalyzer
         }
 
         return lists;
-    }
-
-    private static bool HasAuditProperties(ClassDeclarationSyntax cls)
-    {
-        // 檢查是否有下列屬性：
-        // DateTime? CreatedAt { get; set; }
-        // string   CreatedBy { get; set; }
-        // DateTime? UpdatedAt { get; set; }
-        // string   UpdatedBy { get; set; }
-        bool Has(string name, Func<TypeSyntax, bool> typePredicate)
-        {
-            var p = cls.Members.OfType<PropertyDeclarationSyntax>()
-                .FirstOrDefault(x => x.Identifier.Text == name && HasGetSetAccessors(x));
-            return p != null && typePredicate(p.Type);
-        }
-
-        bool IsString(TypeSyntax t) => t.ToString() == "string" ||
-                                       t is PredefinedTypeSyntax pts && pts.Keyword.IsKind(SyntaxKind.StringKeyword);
-
-        bool IsNullableDateTime(TypeSyntax t)
-        {
-            // 支援 DateTime? 或 Nullable<DateTime>
-            var text = t.ToString();
-            if (text == "DateTime?") return true;
-            switch (t)
-            {
-                case NullableTypeSyntax nts when nts.ElementType.ToString() == "DateTime":
-                case GenericNameSyntax { Identifier.Text: "Nullable" } g when
-                    g.TypeArgumentList.Arguments.FirstOrDefault()?.ToString() == "DateTime":
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        return Has("CreatedAt", IsNullableDateTime)
-               && Has("CreatedBy", IsString)
-               && Has("UpdatedAt", IsNullableDateTime)
-               && Has("UpdatedBy", IsString);
-    }
-
-    private static ClassDeclarationSyntax EnsureImplementsIAuditableRow(ClassDeclarationSyntax cls)
-    {
-        bool AlreadyHas()
-            => cls.BaseList?.Types.Any(t =>
-                t.Type.ToString() == "IAuditableRow" ||
-                t.Type.ToString().EndsWith(".IAuditableRow", StringComparison.Ordinal)) == true;
-
-        if (AlreadyHas()) return cls;
-
-        var newType = SyntaxFactory.SimpleBaseType(SyntaxFactory.ParseTypeName("IAuditableRow"));
-        if (cls.BaseList == null)
-        {
-            var baseList = SyntaxFactory.BaseList(SyntaxFactory.SeparatedList<BaseTypeSyntax>([newType]));
-            return cls.WithBaseList(baseList);
-        }
-        else
-        {
-            var types = cls.BaseList.Types.Add(newType);
-            return cls.WithBaseList(cls.BaseList.WithTypes(types));
-        }
     }
 
     // 以 Roslyn 修改屬性 DisplayName
