@@ -143,19 +143,36 @@ public class Program
             // 取得資料庫欄位註解
             var columnComments = await GetColumnComments(connectionString, providerName, classInfo.TableName);
 
-            if (columnComments.Count == 0)
+            // 取得資料表註解（用於類級 DisplayName、InstanceName 與權限）
+            var tableComment = await GetTableComment(connectionString, providerName, classInfo.TableName);
+            string tableDisplayName = null;
+            if (!string.IsNullOrWhiteSpace(tableComment))
             {
-                Console.WriteLine($"  跳過: 資料表 '{classInfo.TableName}' 沒有欄位註解");
-                return;
+                tableDisplayName = ExtractCommentText(tableComment);
             }
 
-            // 更新 DisplayName
+            // 更新 DisplayName（欄位）
             var updatedContent = analyzer.UpdateDisplayNames(content, classInfo.Properties, columnComments);
+
+            // 若有表註解，更新類級特性：DisplayName、InstanceName、以及 3 個權限特性
+            if (!string.IsNullOrWhiteSpace(tableDisplayName))
+            {
+                var updatedWithClassAttrs = analyzer.UpdateClassAttributes(updatedContent, tableDisplayName);
+                if (!string.Equals(updatedWithClassAttrs, updatedContent, StringComparison.Ordinal))
+                {
+                    updatedContent = updatedWithClassAttrs;
+                    Console.WriteLine($"  已更新類級特性: DisplayName/InstanceName 與 權限(\"{tableDisplayName}:General\")");
+                }
+            }
+            else
+            {
+                Console.WriteLine("  提示: 資料表無註解，略過類級 DisplayName/InstanceName 與 權限特性更新");
+            }
 
             if (content != updatedContent)
             {
                 await File.WriteAllTextAsync(filePath, updatedContent);
-                Console.WriteLine($"  已更新: {columnComments.Count} 個 DisplayName");
+                Console.WriteLine($"  已更新: {columnComments.Count} 個欄位 DisplayName");
             }
             else
             {
@@ -341,6 +358,76 @@ public class Program
                 comments[columnName] = extractedComment;
             }
         }
+    }
+
+    private static async Task<string> GetTableComment(string connectionString, string providerName, string tableName)
+    {
+        var provider = !string.IsNullOrEmpty(providerName)
+            ? MapProviderName(providerName)
+            : DetectDatabaseProvider(connectionString);
+
+        switch (provider.ToLower())
+        {
+            case "sqlserver":
+                return await GetSqlServerTableComment(connectionString, tableName);
+            case "postgresql":
+                return await GetPostgreSqlTableComment(connectionString, tableName);
+            case "sqlite":
+                // SQLite 無表註解
+                return null;
+            default:
+                return null;
+        }
+    }
+
+    private static async Task<string> GetSqlServerTableComment(string connectionString, string tableName)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        var (schema, table) = ParseSqlserverTableName(tableName);
+
+        const string sql = """
+                               SELECT CAST(ep.value AS NVARCHAR(MAX)) AS TABLE_COMMENT
+                               FROM sys.extended_properties ep
+                               INNER JOIN sys.objects o ON ep.major_id = o.object_id
+                               INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+                               WHERE ep.name = 'MS_Description'
+                                 AND ep.minor_id = 0
+                                 AND o.type IN ('U') -- user table
+                                 AND s.name = @SchemaName
+                                 AND o.name = @TableName
+                           """;
+
+        await using var cmd = new SqlCommand(sql, connection);
+        cmd.Parameters.AddWithValue("@SchemaName", schema);
+        cmd.Parameters.AddWithValue("@TableName", table);
+
+        var result = await cmd.ExecuteScalarAsync();
+        return result is string s && !string.IsNullOrWhiteSpace(s) ? s : null;
+    }
+
+    private static async Task<string> GetPostgreSqlTableComment(string connectionString, string tableName)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        var (schema, table) = ParsePostgreSqlTableName(tableName);
+
+        const string sql = """
+                               SELECT obj_description(pgc.oid) AS table_comment
+                               FROM pg_class pgc
+                               JOIN pg_namespace pns ON pns.oid = pgc.relnamespace
+                               WHERE pgc.relname = @table_name
+                                 AND pns.nspname = @table_schema
+                           """;
+
+        await using var cmd = new NpgsqlCommand(sql, connection);
+        cmd.Parameters.AddWithValue("table_name", table);
+        cmd.Parameters.AddWithValue("table_schema", schema);
+
+        var result = await cmd.ExecuteScalarAsync();
+        return result is string s && !string.IsNullOrWhiteSpace(s) ? s : null;
     }
 
     private static string ExtractCommentText(string comment)
