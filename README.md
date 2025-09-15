@@ -109,8 +109,8 @@ chmod +x build.sh
 
 ```bash
 # 複製專案
-git clone https://github.com/leoshiang/serenity-row-display-name-updater.git
-cd serenity-row-display-name-updater
+git clone https://github.com/leoshiang/serupd.git
+cd serupd
 
 # 一般建置
 dotnet build
